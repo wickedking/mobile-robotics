@@ -1,0 +1,520 @@
+#define LEFT_M OUT_A
+#define RIGHT_M OUT_C
+#define BOTH_M OUT_AC
+#define MOTOR_POWER_CORRECTION 0
+
+#define ULTRASONIC_SENSOR IN_4
+#define US_POLL_RATE 300
+#define US_FAR_THRESHOLD 100 //was 100
+#define US_NEAR_THRESHOLD 18 //was 26
+#define US_PAUSE 1000
+#define US_BACKUP_PWR 60
+#define US_TURN_PWR 50
+
+#define ARBITRATOR_WAIT 100 // needs tuning
+
+#define WANDER_TURN_BASE 40
+#define WANDER_PWR 70
+#define WANDER_WAIT 500
+
+// threshold for what defines "white" (for downward sensors)
+#define THRESHOLD 40
+
+#define b_power 50
+#define c_power 50
+
+//wander = 1
+//gradient = 2
+//feeding = 3
+//approach = 4
+//escape = 5
+//colision = 6
+//death = 7
+int robot_state = 1;
+int max = 240;  //food time, in seconds, default is 240, test is 30
+int food = 240; //set to same as max
+int last_bumper = 0;
+
+enum HungerState {
+     STOP_FEEDING, FULL, HUNGRY, DANGER, DEAD
+};
+
+HungerState hunger_state;
+bool feeding = false;
+int scares = 0;
+bool scared = false;
+
+// state for collision task
+long collision_status;
+// state for ultrasonic task
+int ultrasonic_distance;
+
+sub death() {
+ while (true) {
+  //haha your dead
+ }
+}
+  
+task Gradient() {  //gradient stuff
+
+  int edge = 1;
+  long current = 0;
+  long t1 = 0; //placeholder for currentTick
+  long t2 = 0; //placeholder for clockwise turn time
+  long t3 = 0; //placeholder for counterclockwise turn time
+  long t4 = 2000; //2 seconds
+  long t5 = 2000; //2 seconds 180° turn
+  int bhvr = 1;
+  int right_turn_time = 0;
+  int left_turn_time = 0;
+  int end = 0;
+  while (true) {
+
+     if (robot_state == 2 || robot_state == 3)
+     {
+     switch(bhvr) {
+       while (true) {
+       if (robot_state == 2 || robot_state == 3)
+       {
+       
+       //DO A 180 turn and start feeding
+       case 0:
+       OnFwd(OUT_A, 50);
+       OnRev(OUT_C, 50);
+       Wait(2000);
+
+       //uncomment and use the following code if the previous Wait(2000) prevents 'scared' behaviour when doing a 180°
+       //t1 = CurrentTick();
+       //until(((CurrentTick() - t1) > t5));
+
+       //180° turn done, switch to feeding bhvr
+       bhvr = 3;
+       if (feeding == false){
+       PlaySound(SOUND_CLICK);
+       }
+       feeding = true;
+       break;
+       
+       //light sensor detected a patch
+       case 1:
+       while ((Sensor(IN_2) > THRESHOLD) || (Sensor(IN_1) > THRESHOLD)){
+        //SWITCH TO BEHAVIOR 3, BOTH SENSORS ON PATCH
+        if ((Sensor(IN_2) > THRESHOLD) && (Sensor(IN_1) > THRESHOLD)) {
+         bhvr = 3;
+         break;
+        }
+        OnFwd(OUT_AC, 50);
+       }
+       //only one sensor on the patch
+       if (  (Sensor(IN_2) < THRESHOLD) || (Sensor(IN_1) < THRESHOLD)){
+       bhvr = 2;
+       }
+       break;
+
+
+       //case when only one light sensor found a patch, run this case until both sensors are on patch
+       case 2:
+       //Large clockwise to find a line
+       t1 = CurrentTick();
+       right_turn_time = 1250;
+       OnFwd(OUT_C, 100);
+       OnFwd(OUT_A, 1);
+       until((Sensor(IN_2) > THRESHOLD) || (Sensor(IN_1) > THRESHOLD) ||((CurrentTick() - t1) >= right_turn_time));
+       if ((Sensor(IN_2) > THRESHOLD) || (Sensor(IN_1) > THRESHOLD)) {
+         end = 0;
+         bhvr = 1;
+         break;
+       }
+       t2 = CurrentTick() - t1;
+       t1 = CurrentTick();
+       //turn back counterclockwise to original position if no line found
+       OnRev(OUT_C, 100);
+       OnRev(OUT_A, 1);
+       until( ((CurrentTick() - t1) > t2));
+       t1 = CurrentTick();
+       left_turn_time = 1350;
+       //Large counterclockwise to find a line
+       OnFwd(OUT_A, 100);
+       OnFwd(OUT_C, 1);
+       until((Sensor(IN_2) > THRESHOLD) || (Sensor(IN_1) > THRESHOLD) ||((CurrentTick() - t1)>= left_turn_time));
+       if ((Sensor(IN_2) > THRESHOLD) || (Sensor(IN_1) > THRESHOLD)) {
+         end = 0;
+         bhvr = 1;
+         break;
+       }
+       t3 = CurrentTick() - t1;
+       t1 = CurrentTick();
+       //Large clockwise to find a line
+       OnRev(OUT_A, 100);
+       OnRev(OUT_C, 1);
+       until( ((CurrentTick() - t1) > t3));
+       t2 = 0;
+       t3 = 0;
+       bhvr = 1;
+       break;
+       
+       //CASE 3: Both sensors on the patch
+       case 3:
+       while ((Sensor(IN_1) > THRESHOLD) && (Sensor(IN_2) > THRESHOLD))  {
+
+             current = CurrentTick();
+             OnFwd(OUT_A, 50); //Straight ahead
+             OnFwd(OUT_C, 50);
+             until (((CurrentTick()-current) > t4) || (Sensor(IN_1) < THRESHOLD) || (Sensor(IN_2) < THRESHOLD));
+             if ((Sensor(IN_1) < THRESHOLD) || (Sensor(IN_2) < THRESHOLD)){
+              break;
+             }
+             OnFwd(OUT_A, 50); //Straight ahead
+             OnFwd(OUT_C, 50);
+             if (feeding == false){
+             PlaySound(SOUND_CLICK);
+             }
+             feeding = true;
+             edge = 1;
+             }
+       while ((Sensor(IN_1) < THRESHOLD) || (Sensor(IN_2) < THRESHOLD))  {
+
+                if  ((Sensor(IN_1) < THRESHOLD) && (Sensor(IN_2) < THRESHOLD)) {
+                         if (edge){
+                          OnRev(OUT_AC, 50);
+                          Wait(300);
+                          OnFwd(OUT_A, 50);
+                          Wait(200);
+                          edge = 0;
+                         }
+                         else{
+                        Off(OUT_AC);
+                        Wait(2000);
+                        edge = 1;
+                        bhvr = 0;
+                        }
+                        break;
+                }
+
+                else if ((Sensor(IN_1) < THRESHOLD) && (Sensor(IN_2) > THRESHOLD)){
+                    OnFwd(OUT_A, 75);
+                    OnRev(OUT_C, 5);
+                }
+
+                else if ((Sensor(IN_1) > THRESHOLD) && (Sensor(IN_2) < THRESHOLD)){
+                    OnFwd(OUT_C, 75);
+                    OnRev(OUT_A, 5);
+                          }
+       }
+       break;
+
+       }
+     }
+    }
+   }
+  }
+}
+
+task collision() {
+     while (true) {
+         if (robot_state != 6) {
+            continue;
+         }
+            Off(OUT_AC);
+            //NumOut(5, LCD_LINE2, /*last_bumper*/ collision_status);
+            //PlaySound(SOUND_DOWN);
+            if (collision_status == 1) {
+                 OnRev(BOTH_M, 50);
+                 Wait(1000);
+                 Off(RIGHT_M);
+                 OnFwd(LEFT_M, b_power);
+                 OnRev(RIGHT_M, c_power);
+                 Wait(Random(100) + 450);
+                 Off(LEFT_M);
+                 OnFwd(BOTH_M, 50);
+            } else if (/*last_bumper*/ collision_status == 2) {
+                OnRev(BOTH_M, 50);
+                Wait(1000);
+                Off(LEFT_M);
+                OnFwd(RIGHT_M, c_power);
+                OnRev(LEFT_M, b_power);
+                Wait(Random(100) + 450);
+                Off(RIGHT_M);
+                OnFwd(BOTH_M, 50);
+            } else if (/*last_bumper*/ collision_status == 3) {
+               OnRev(BOTH_M, b_power);
+               Wait(1300);
+               Off(BOTH_M);
+               Wait(2000);
+            }
+            robot_state = 1;
+            collision_status = 0;
+     }
+}
+
+//Task to Habitulize the robot after scaring.
+task increment_scare() {
+     while (true) {
+         if (scared) {
+             Wait(60000); //wait 60 sec
+             if (scares == 0) {
+                 scared = false;
+                 continue;
+             } else {
+                 scared = true;
+                 scares = scares - 1;
+             }
+         }
+     }
+}
+
+//Method to run away according to how scared it is
+task Escape() {
+     bool bail_out = false;
+     while (true) {
+        if (robot_state == 7) {
+           break;
+        }
+        if (robot_state != 5) {
+           continue;
+        }
+        bail_out = false;
+        if (scares > 3) {
+           robot_state = 1;
+           continue;
+        } else {
+           scares = scares + 1;
+        }
+        int MOTOR_OUT = 100 / scares;
+        OnRev(BOTH_M, MOTOR_OUT);
+        Wait(300);
+        OnRev(LEFT_M, MOTOR_OUT);
+        OnRev(RIGHT_M, MOTOR_OUT / 2);
+        long time = CurrentTick();
+        int wait =  Random(1000);
+        while (time + wait > CurrentTick()) {
+           if (robot_state != 5) {
+              Off(BOTH_M);
+              bail_out = true;
+              break;
+           }
+        }
+        if (bail_out)
+           continue;
+        OnFwd(BOTH_M, MOTOR_OUT);
+        time = CurrentTick();
+        int extra = 3000;
+        while (time + extra > CurrentTick()) {
+           if (robot_state != 5) {
+              Off(BOTH_M);
+              bail_out = true;
+              break;
+           }
+        }
+        if (bail_out)
+           continue;
+        Off(BOTH_M);
+        robot_state = 1;
+     }
+}
+
+task hunger() {
+    bool check = true;
+    while (true) {
+           food = (feeding) ? food + 2 : food - 1;
+           if (food <= 0) {
+              hunger_state = DEAD;
+           } else if (food <= (max/4)) {
+              hunger_state = DANGER;
+              if (check){
+                 PlaySound(SOUND_FAST_UP);
+                 check = false;
+              }
+           } else if (food <= (max/2)) {
+              if (hunger_state != HUNGRY)
+              {
+              PlaySound(SOUND_DOUBLE_BEEP);
+              }
+              hunger_state = HUNGRY;
+           } else if (food <= (max - 1)) {
+              hunger_state = FULL;
+           } else {
+              if (hunger_state != STOP_FEEDING){
+              PlaySound(SOUND_UP);
+              }
+              food = max;
+              hunger_state = STOP_FEEDING;
+              feeding = false;
+              robot_state = 1;
+           }
+           Wait(SEC_1);
+     }
+}
+
+bool GetCollisionInput() {
+     string message;
+     char x = ReceiveRemoteString(MAILBOX1, true, message);
+     collision_status = StrToNum(message);
+     if (collision_status != 0) {
+         return true;
+     } else {
+       return false;
+     }
+}
+
+bool GetEscapeInput() {
+     string message = "";
+     bool test = false;
+     char x = ReceiveRemoteString(MAILBOX2, true, message);
+     if (message != "" ) {
+      scared = true;
+      test = true;
+     }
+     NumOut(5, LCD_LINE4, scared);
+     return test;
+}
+
+int GetUSInput() {
+     return ultrasonic_distance;
+}
+
+bool BeginFeeding(int l, int r) {
+     return false;
+}
+
+task UltrasonicPoll() {
+     while (true) {
+           Wait(US_POLL_RATE);
+           ultrasonic_distance = SensorUS(ULTRASONIC_SENSOR);
+           bool ultrasonic_run = ultrasonic_distance < US_FAR_THRESHOLD;
+     }
+}
+
+task Approach() {
+     while (true) {
+        if (robot_state == 7) {
+           break;
+        }
+        if (robot_state != 4) {
+           continue;
+        }
+        if (ultrasonic_distance < US_FAR_THRESHOLD && ultrasonic_distance > US_NEAR_THRESHOLD) {
+           OnFwdSync(BOTH_M, ultrasonic_distance, MOTOR_POWER_CORRECTION);
+        } else if (ultrasonic_distance <= US_NEAR_THRESHOLD) {
+           Off(BOTH_M);
+           Wait(US_PAUSE);
+           if (robot_state != 4)
+              continue;
+           OnRevSync(OUT_AC, US_BACKUP_PWR, 0);
+           Wait(SEC_1);
+           Off(BOTH_M);
+           if (robot_state != 4)
+              continue;
+           if (Random(100) % 2 > 0) {
+              OnFwd(LEFT_M, US_TURN_PWR);
+              OnRev(RIGHT_M, US_TURN_PWR);
+           } else {
+             OnFwd(RIGHT_M, US_TURN_PWR);
+             OnRev(LEFT_M, US_TURN_PWR);
+           }
+           Wait(1500);
+           Off(BOTH_M);
+           if (robot_state != 4)
+              continue; // needed to skip robot_state = 1;
+        } else {
+           robot_state = 1;
+        }
+     }
+}
+
+task Wander() {
+     while (true) {
+           if (robot_state == 7)
+              break; // blargh im dead
+           if (robot_state == 1) {
+              int r = Random(30) + 30;
+              if (r % 2 == 0 && robot_state == 1) {
+                 OnFwd(LEFT_M, WANDER_PWR - r);
+                 OnFwd(RIGHT_M, WANDER_PWR);
+              } else {
+                if (robot_state == 1){
+                 OnFwd(LEFT_M, WANDER_PWR);
+                 OnFwd(RIGHT_M, WANDER_PWR - r);
+                } else {
+                 continue;
+                }
+              }
+              long time = CurrentTick() ;
+              //do nothing; "&& robot_state == 1" needed to kick out of wait early 
+              //if state changes
+              while (time + WANDER_WAIT > CurrentTick() && robot_state == 1);
+           }
+     }
+}
+
+task arbitrator() {
+
+     /*Using robot_state, the arbitrator determines what input it has
+     *and then decides what state it should be in.
+     *The arbitrator cannot set it to a lower state.
+     *When each processes is done with its movement, it sets
+     *the state back to 1, which is wander, which
+     *allows the arbitrator to set the state again.
+     *A higher state can be set over a lower one.
+     */
+     bool collision_input = false,
+          escape_input = false;
+     feeding = false;
+     int ultrasonic_input,
+         left_ls,
+         right_ls;
+     robot_state = 1;
+     while (true) {
+            if (food == 0)   {  //haha your dead
+              PlaySound(SOUND_LOW_BEEP);
+              StopAllTasks();
+            }
+           collision_input = GetCollisionInput();
+           escape_input = GetEscapeInput();
+           NumOut(5, LCD_LINE1, robot_state);
+           ultrasonic_input = GetUSInput();
+           ClearLine(LCD_LINE7);
+           NumOut(5, LCD_LINE7, ultrasonic_input);
+           bool ultrasonic_run = ultrasonic_input < US_FAR_THRESHOLD;
+           NumOut(5, LCD_LINE8, ultrasonic_run);
+             
+           bool gradient = ((Sensor(IN_1) > THRESHOLD) || (Sensor(IN_2) >THRESHOLD));
+           
+           //wander = 1     Priority for each task. High number is higher
+           //gradient = 2   priority. Notice gradient and feeding have 2 different
+           //feeding = 3    state numbers however it is only using 1 in the production
+           //approach = 4   code.
+           //escape = 5
+           //colision = 6
+           //death = 7
+
+           //Allows to skip assignements if nothing to assign
+           if (collision_input || escape_input || ultrasonic_run || gradient) {
+              if (collision_input) {
+                 ClearLine(1);
+                 feeding = false;
+                 robot_state = 6;
+                 NumOut(5, LCD_LINE1, robot_state);
+              } else if (escape_input && robot_state < 5 && hunger_state != DANGER) {
+                ClearLine(1);
+                robot_state = 5;
+                NumOut(5, LCD_LINE1, robot_state);
+              } else if (ultrasonic_run && robot_state < 4 && hunger_state != DANGER) {
+                ClearLine(1);
+                robot_state = 4;
+                NumOut(5, LCD_LINE1, robot_state);
+              } else if (gradient && robot_state < 3 && (hunger_state == HUNGRY || hunger_state == DANGER)){
+                ClearLine(1);
+                robot_state = 3;
+                NumOut(5, LCD_LINE1, robot_state);
+              }
+           }
+     }
+}
+
+task main() {
+     SetSensorUltrasonic(ULTRASONIC_SENSOR);
+     SetSensorLight(IN_1); //gradient stuff
+     SetSensorLight(IN_2);
+     Precedes(arbitrator, Wander, collision, Gradient, hunger, Escape, increment_scare, UltrasonicPoll, Approach);
+}
