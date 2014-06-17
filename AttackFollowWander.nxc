@@ -1,0 +1,294 @@
+//global variables to determine motor speed
+#define HIGH_POWER 80
+#define LOW_POWER 50
+
+//maximum object approach range
+#define NEAR 120
+
+//minimum object approach range
+#define CLOSEENOUGH 18
+
+//Constants that will be determined during the robot's calibration
+//subroutine and used in all light-sensor calculations.
+float BLACK_1, WHITE_1, BLACK_2, WHITE_2;
+
+//The constant representing the highest value from the sensors that will
+//still be defined as black by the robot.
+float LIGHT_THRESHHOLD = 10.0;
+
+//Array used as a buffer for light-sensors for filtering out noise.
+int LIGHT_BUFFER[];
+
+//This variable is used for
+//saving motor data between tasks
+mutex motorMutex;
+
+//An integer representing the state that the robot is in currently.
+int robot_state = 0;
+
+//Boolean variables representing whether light sensor 1 and light sensor 2 are
+//currently seeing black or white.
+bool sen1 = false;
+bool sen2 = false;
+
+//A boolean variable representing whether the robot has detected an object within
+//its approach range.
+char ultrasonic_flag = 0;
+
+//A variable for storing the filtered distance read by the ultrasonic sensor.
+float ultrasonic_filtered;
+
+//A mutex variable used to modify the ultrasonic flag.
+mutex ultrasonic_mutex;
+
+//An array used to store the 8 most recent readings from the ultrasonic sensor,
+//to be used in filtering out noise from the sensor's readings.
+int values[8];
+
+//This is the robot's task (thread) that implements its
+//drunk-sailor wander behavior. State = 0.
+task wander() {
+     while (true) {
+           while (robot_state == 0) {
+                Acquire(motorMutex);
+                int choice = Random(100);
+                if (choice % 2 == 0) {
+                   OnFwd(OUT_B, HIGH_POWER - 5);
+                   OnFwd(OUT_C, LOW_POWER);
+                } else {
+                   OnFwd(OUT_C, HIGH_POWER);
+                   OnFwd(OUT_B, LOW_POWER - 5);
+                }
+                Release(motorMutex);
+                Wait(Random(250) + 250);
+          }
+     }
+}
+
+//Returns the normalized value of the light sensor corresponding to the
+//given sensor_slot.
+float getCalSenVal(int sensor_slot) {
+    float result;
+    if (sensor_slot == 1) {
+       result = (100 * ((Sensor(IN_1) - BLACK_1) / (WHITE_1 - BLACK_1)));
+    } else if (sensor_slot == 2) {
+       result = (100 * ((Sensor(IN_2) - BLACK_2) / (WHITE_2 - BLACK_2)));
+    } else {
+       result = -1;
+    }
+    if( result < 0){
+        result = 0;
+    }
+    return result;
+}
+
+//This is the robot's task (thread) that implements its
+//line-following behavior. State = 1.
+task lineFollowing() {
+     //Represents the side the last line was detected on.
+     bool left = false;
+     while(true) {
+              while(robot_state == 1) {
+                 if(sen1 && sen2){//Will go forward since both sensors are tripped.
+                   OnFwd(OUT_BC, 50);
+                 } else if(sen1 && !sen2){//Turn left since no line on right side.
+                    OnFwd(OUT_B, 25);  //OnFwd(OUT_B, 30)
+                    OnFwd(OUT_C, 60);  //OnFwd(OUT_C, 60)
+                    left = true;
+                 } else if(!sen1 && sen2){//Turn right since no line on left side.
+                    OnFwd(OUT_B, 60);  //OnFwd(OUT_B, 60)
+                    OnFwd(OUT_C, 25);  //OnFwd(OUT_C, 30)
+                    left = false;
+                 } else {//No line found at current time.
+                    long time = 0;
+                    //If the line was last seen on the left.
+                    //Will turn left then turn right to detect the line again.
+                    if (left) {
+                         time = CurrentTick();
+                         while ((CurrentTick() < time + 900) && (!sen2 && !sen1) && robot_state != 2) {
+                            OnFwd(OUT_C, 30);
+                            OnRev(OUT_B, 30);
+                            left = true;
+                         }
+                         if (!sen1) {//If it didnt find the line
+                            time = CurrentTick();
+                            while ((CurrentTick() < time + 1400) && (!sen1 && !sen2) && robot_state != 2) {
+                                OnRev(OUT_C, 30);
+                                OnFwd(OUT_B, 30);
+                                left = false;
+                            }
+                            if (!sen2) {
+                                PlaySound(SOUND_UP);//Lost the line
+                                robot_state = 0;
+                            }
+                         }
+                    } else { //If the line was last seen on the right.
+                         time = CurrentTick();
+                         while ((CurrentTick() < time + 900) && (!sen2 && !sen1) && robot_state != 2) {
+                            OnFwd(OUT_B, 30);
+                            OnRev(OUT_C, 30);
+                            left = false;
+                         }
+                         if (!sen2) {//If it didnt find the line
+                            time = CurrentTick();
+                            while ((CurrentTick() < time + 1400) && (!sen1 && !sen2) && robot_state != 2) {
+                                OnRev(OUT_B, 30);
+                                OnFwd(OUT_C, 30);
+                                left = true;
+                            }
+                            if (!sen1) {
+                                PlaySound(SOUND_UP);//Lost the line
+                                robot_state = 0;
+                            }
+                         }
+                     }
+                 }
+            }
+     }
+}
+
+//Filters the values in the array of recent readings from the ultrasonic sensor,
+//in order to reduce noise generated from the sensor's inaccuracy, and averages
+//them to get a more accurate reading from the sensor.
+sub filter(){
+    float sum = 0;
+    float count = 0;
+    int minValue= 0;
+    int maxValue = 0;
+    for(int i = 0; i < ArrayLen(values); i++){
+        if(values[i] > values[maxValue]){
+            maxValue = i;
+        }
+        if(values[i] < values[minValue]){
+            minValue = i;
+        }
+    }
+    //Discards the min and max values, averages the rest.
+    for(int i = 0; i < ArrayLen(values); i++){
+        if(i != maxValue || i != minValue){
+            sum += values[i];
+            count++;
+        }
+    }
+    float average = sum/count;
+    ultrasonic_filtered = average;
+}
+
+//Causes the robot to back up and turn around. Only called when the robot has
+//approached a detected object and come within the minimum distance from the
+//object.
+sub backUp(){
+           Off(OUT_BC);
+           Wait(3000);
+           OnRev(OUT_BC, 50);
+           Wait(1000);
+           int r = Random(100);
+           if (r % 2 == 1){
+               OnFwd(OUT_C, 70);
+           } else{
+               OnFwd(OUT_B, 70);
+           }
+           Wait(500);
+           Off(OUT_BC);
+           ultrasonic_flag = 0;
+           robot_state = 0;
+}
+
+//The robot's task (thread) for updating the sensors' readings and acts as the
+//robot's arbitrator.
+task sensorsUpdate(){
+       while(true) {
+         sen1 = getCalSenVal(1) <= LIGHT_THRESHHOLD;
+         sen2 = getCalSenVal(2) <= LIGHT_THRESHHOLD;
+        
+        Acquire(ultrasonic_mutex);
+        //reads values (in cm) from ultrasonic sensor into array
+        for(int i = 0; i < ArrayLen(values); i++){
+            values[i] = SensorUS(IN_3);
+        }
+        filter();
+        if(ultrasonic_filtered <= NEAR && ultrasonic_filtered >= CLOSEENOUGH){
+           //reads values (in cm) from ultrasonic sensor into array
+            for(int i = 0; i < ArrayLen(values); i++){
+               values[i] = SensorUS(IN_3);
+            }
+            filter();
+            if(ultrasonic_filtered <= NEAR && ultrasonic_filtered >= CLOSEENOUGH){
+                robot_state = 2;
+                ultrasonic_flag = 1;
+           }
+        }else if (robot_state == 2){
+           backUp();
+        }
+        Release(ultrasonic_mutex);
+        
+         if (robot_state == 0 && (sen1 || sen2)) {
+            robot_state = 1;
+         }
+       }
+}
+
+//Calculates WHITE and BLACK constants for both light-sensors for use in
+//future calibrations.
+sub calibrateLightSensors() {
+     float avg_1 = 0;
+     float avg_2 = 0;
+     int itr = 0;
+     
+     while (itr < 6) {
+           avg_1 += Sensor(IN_1);
+           avg_2 += Sensor(IN_2);
+           Wait(500);
+           itr++;
+     }
+     WHITE_1 = avg_1 / 6;
+     WHITE_2 = avg_2 / 6;
+     
+     PlaySound(SOUND_DOWN);
+     Wait(3000);
+     
+     avg_1 = 0;
+     avg_2 = 0;
+     itr = 0;
+     while (itr < 6) {
+           avg_1 += Sensor(IN_1);
+           avg_2 += Sensor(IN_2);
+           Wait(500);
+           itr++;
+     }
+     
+     BLACK_1 = avg_1 / 6;
+     BLACK_2 = avg_2 / 6;
+     PlaySound(SOUND_DOWN);
+     Wait(4000);
+}
+
+//The robot's task (thread) for approaching an object once it's been detected
+//within the robot's approach range by the ultrasonic sensor.
+task ApprochObject(){
+    while(true){
+        if(ultrasonic_flag == 1){
+           float normalizedDistance;
+            int speed;
+            Acquire(ultrasonic_mutex);
+            //Checks whether the filered distance values are within the
+            //specified range.
+            if (ultrasonic_filtered <= NEAR && ultrasonic_filtered >= CLOSEENOUGH){
+               normalizedDistance = ultrasonic_filtered/NEAR;
+               speed = normalizedDistance * 100;
+               OnFwdSync(OUT_BC, speed, 0);
+            }
+            Release(ultrasonic_mutex);
+        }
+    }
+}
+
+//This is the main method that runs the robot's tasks and initializes
+//its sensors.
+task main() {
+     Precedes(wander, lineFollowing, sensorsUpdate, ApprochObject);
+     SetSensorLight(IN_1);
+     SetSensorLight(IN_2);
+     SetSensorLowspeed(IN_3);
+     calibrateLightSensors();
+}
